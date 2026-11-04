@@ -696,6 +696,55 @@ function withTab<T extends object>(target: T, tabId?: string): T & { tabId?: str
   return tabId ? { ...target, tabId } : target;
 }
 
+// The table starting at `tableStartIndex` in the default body or in a tab
+// (editTableCell and the row/column tools). Reads that tab's content for a
+// tab-scoped call — the default narrow fetch is tab-blind.
+async function findDocTable(
+  ctx: ToolContext,
+  documentId: string,
+  tableStartIndex: number,
+  tabId: string | undefined,
+  label: string,
+): Promise<{ table?: any; error?: string }> {
+  let content: any[] | undefined;
+  if (tabId) {
+    const resolved = await getTabBodyContent(ctx, documentId, tabId);
+    if (resolved.error) return { error: resolved.error };
+    content = resolved.content;
+  } else {
+    const docs = ctx.google.docs({ version: 'v1', auth: ctx.authClient });
+    const res = await withRetry(
+      (signal) => docs.documents.get({ documentId, fields: 'body(content)' }, { signal }),
+      ctx.runtimeConfig,
+      `docs.documents.get(${label})`,
+      ctx.log
+    );
+    content = res.data.body?.content ?? undefined;
+  }
+  const table = content?.find((elem: any) => elem.table && elem.startIndex === tableStartIndex)?.table;
+  return table ? { table } : { error: `No table found at index ${tableStartIndex}` };
+}
+
+// A table's cells after a row/column change: each one's real index range and
+// the start of its text, so the caller can write into a new row at once.
+function describeTableCells(table: any): string {
+  const lines: string[] = [];
+  (table.tableRows ?? []).forEach((row: any, r: number) => {
+    const cells = (row.tableCells ?? []).map((cell: any, c: number) => {
+      const text = (cell.content ?? [])
+        .flatMap((b: any) => b.paragraph?.elements ?? [])
+        .map((e: any) => e.textRun?.content ?? '')
+        .join('')
+        .replace(/\n+$/, '')
+        .replace(/\n/g, ' ');
+      const shown = text.length > 40 ? `${text.slice(0, 40)}…` : text;
+      return `r${r}c${c} [${cell.startIndex}-${cell.endIndex}]${shown ? ` "${shown}"` : ''}`;
+    });
+    lines.push(cells.join(', '));
+  });
+  return lines.join('\n');
+}
+
 // Find text in a document and return the range indices.
 // Pass `preResolvedContent` to reuse an already-fetched body content array
 // (e.g. a tab body resolved once by the caller) and skip the internal GET —
@@ -2247,6 +2296,39 @@ const EditTableCellSchema = z.object({
   ifRevisionId: z.string().optional()
 });
 
+const TableRowColumnBaseSchema = {
+  documentId: z.string().min(1, "Document ID is required"),
+  tableStartIndex: z.number().int().min(1, "Table start index is required"),
+  tabId: z.string().optional(),
+  ifRevisionId: z.string().optional()
+};
+
+const InsertTableRowSchema = z.object({
+  ...TableRowColumnBaseSchema,
+  rowIndex: z.number().int().min(0, "Row index must be at least 0 (0-based)"),
+  columnIndex: z.number().int().min(0, "Column index must be at least 0 (0-based)").optional(),
+  insertBelow: z.boolean().optional()
+});
+
+const DeleteTableRowSchema = z.object({
+  ...TableRowColumnBaseSchema,
+  rowIndex: z.number().int().min(0, "Row index must be at least 0 (0-based)"),
+  columnIndex: z.number().int().min(0, "Column index must be at least 0 (0-based)").optional()
+});
+
+const InsertTableColumnSchema = z.object({
+  ...TableRowColumnBaseSchema,
+  columnIndex: z.number().int().min(0, "Column index must be at least 0 (0-based)"),
+  rowIndex: z.number().int().min(0, "Row index must be at least 0 (0-based)").optional(),
+  insertRight: z.boolean().optional()
+});
+
+const DeleteTableColumnSchema = z.object({
+  ...TableRowColumnBaseSchema,
+  columnIndex: z.number().int().min(0, "Column index must be at least 0 (0-based)"),
+  rowIndex: z.number().int().min(0, "Row index must be at least 0 (0-based)").optional()
+});
+
 const TableCellBorderParamSchema = z.object({
   color: z.string().optional(),
   width: z.number().min(0).optional(),
@@ -2800,6 +2882,72 @@ export const toolDefinitions: ToolDefinition[] = [
         ifRevisionId: { type: "string", description: "Optional optimistic lock: a revisionId from readGoogleDoc, getGoogleDocContent, getGoogleDocContentPaginated, or getDocumentInfo. The write fails cleanly if the document changed since that read. Valid for 24 hours, and only for the account that read it. Google Docs only." }
       },
       required: ["documentId", "tableStartIndex", "rowIndex", "columnIndex"]
+    }
+  },
+  {
+    name: "insertTableRow",
+    description: "Insert a row into an existing Docs table, above or below a reference row (Docs API insertTableRow). The new row takes the reference row's cell styles; every other row keeps its content, links and bookmarks. Returns the table's cells with their new index ranges. Rebuilding a table instead loses links and bookmarks in its cells.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        documentId: { type: "string", description: "The document ID" },
+        tableStartIndex: { type: "number", description: "Start index of the TABLE element, as printed by readGoogleDoc / getGoogleDocContent on the table's span line (tableStartIndex=N)" },
+        rowIndex: { type: "number", description: "Reference row (0-based)" },
+        columnIndex: { type: "number", description: "Optional reference cell's column in that row (0-based, default 0); matters only with merged cells" },
+        insertBelow: { type: "boolean", description: "Insert below the reference row (default: true); false inserts above" },
+        tabId: { type: "string", description: "Optional. Tab ID containing the table (from listDocumentTabs). If omitted, operates on the first/default tab." },
+        ifRevisionId: { type: "string", description: "Optional optimistic lock: a revisionId from readGoogleDoc, getGoogleDocContent, getGoogleDocContentPaginated, or getDocumentInfo. The write fails cleanly if the document changed since that read. Valid for 24 hours, and only for the account that read it. Google Docs only." }
+      },
+      required: ["documentId", "tableStartIndex", "rowIndex"]
+    }
+  },
+  {
+    name: "deleteTableRow",
+    description: "Delete a row from an existing Docs table (Docs API deleteTableRow); the other rows keep their content, links and bookmarks. Refuses the table's only row (delete the table with deleteRange instead). Returns the table's cells with their new index ranges.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        documentId: { type: "string", description: "The document ID" },
+        tableStartIndex: { type: "number", description: "Start index of the TABLE element, as printed by readGoogleDoc / getGoogleDocContent on the table's span line (tableStartIndex=N)" },
+        rowIndex: { type: "number", description: "Row to delete (0-based)" },
+        columnIndex: { type: "number", description: "Optional cell's column in that row (0-based, default 0); matters only with merged cells" },
+        tabId: { type: "string", description: "Optional. Tab ID containing the table (from listDocumentTabs). If omitted, operates on the first/default tab." },
+        ifRevisionId: { type: "string", description: "Optional optimistic lock: a revisionId from readGoogleDoc, getGoogleDocContent, getGoogleDocContentPaginated, or getDocumentInfo. The write fails cleanly if the document changed since that read. Valid for 24 hours, and only for the account that read it. Google Docs only." }
+      },
+      required: ["documentId", "tableStartIndex", "rowIndex"]
+    }
+  },
+  {
+    name: "insertTableColumn",
+    description: "Insert a column into an existing Docs table, left or right of a reference column (Docs API insertTableColumn). The new column takes the reference column's cell styles; every other cell keeps its content, links and bookmarks. Returns the table's cells with their new index ranges.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        documentId: { type: "string", description: "The document ID" },
+        tableStartIndex: { type: "number", description: "Start index of the TABLE element, as printed by readGoogleDoc / getGoogleDocContent on the table's span line (tableStartIndex=N)" },
+        columnIndex: { type: "number", description: "Reference column (0-based)" },
+        rowIndex: { type: "number", description: "Optional reference cell's row (0-based, default 0); matters only with merged cells" },
+        insertRight: { type: "boolean", description: "Insert right of the reference column (default: true); false inserts left" },
+        tabId: { type: "string", description: "Optional. Tab ID containing the table (from listDocumentTabs). If omitted, operates on the first/default tab." },
+        ifRevisionId: { type: "string", description: "Optional optimistic lock: a revisionId from readGoogleDoc, getGoogleDocContent, getGoogleDocContentPaginated, or getDocumentInfo. The write fails cleanly if the document changed since that read. Valid for 24 hours, and only for the account that read it. Google Docs only." }
+      },
+      required: ["documentId", "tableStartIndex", "columnIndex"]
+    }
+  },
+  {
+    name: "deleteTableColumn",
+    description: "Delete a column from an existing Docs table (Docs API deleteTableColumn); the other cells keep their content, links and bookmarks. Refuses the table's only column (delete the table with deleteRange instead). Returns the table's cells with their new index ranges.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        documentId: { type: "string", description: "The document ID" },
+        tableStartIndex: { type: "number", description: "Start index of the TABLE element, as printed by readGoogleDoc / getGoogleDocContent on the table's span line (tableStartIndex=N)" },
+        columnIndex: { type: "number", description: "Column to delete (0-based)" },
+        rowIndex: { type: "number", description: "Optional cell's row (0-based, default 0); matters only with merged cells" },
+        tabId: { type: "string", description: "Optional. Tab ID containing the table (from listDocumentTabs). If omitted, operates on the first/default tab." },
+        ifRevisionId: { type: "string", description: "Optional optimistic lock: a revisionId from readGoogleDoc, getGoogleDocContent, getGoogleDocContentPaginated, or getDocumentInfo. The write fails cleanly if the document changed since that read. Valid for 24 hours, and only for the account that read it. Google Docs only." }
+      },
+      required: ["documentId", "tableStartIndex", "columnIndex"]
     }
   },
   {
@@ -4934,6 +5082,72 @@ export async function handleTool(toolName: string, args: Record<string, unknown>
 
       return {
         content: [{ type: "text", text: `Successfully edited cell at row ${a.rowIndex}, column ${a.columnIndex}${a.tabId ? ` in tab ${a.tabId}` : ''}` }],
+        isError: false
+      };
+    }
+
+    case "insertTableRow":
+    case "deleteTableRow":
+    case "insertTableColumn":
+    case "deleteTableColumn": {
+      const schema = {
+        insertTableRow: InsertTableRowSchema,
+        deleteTableRow: DeleteTableRowSchema,
+        insertTableColumn: InsertTableColumnSchema,
+        deleteTableColumn: DeleteTableColumnSchema,
+      }[toolName as 'insertTableRow' | 'deleteTableRow' | 'insertTableColumn' | 'deleteTableColumn'];
+      const validation = schema.safeParse(args);
+      if (!validation.success) {
+        return errorResponse(validation.error.errors[0].message);
+      }
+      const a = validation.data as {
+        documentId: string; tableStartIndex: number; rowIndex?: number; columnIndex?: number;
+        insertBelow?: boolean; insertRight?: boolean; tabId?: string; ifRevisionId?: string;
+      };
+      const rowIndex = a.rowIndex ?? 0;
+      const columnIndex = a.columnIndex ?? 0;
+
+      // Checked first, so a wrong index says which one instead of the API's generic 400.
+      const found = await findDocTable(ctx, a.documentId, a.tableStartIndex, a.tabId, toolName);
+      if (found.error) {
+        return errorResponse(found.error);
+      }
+      const rows: any[] = found.table.tableRows ?? [];
+      if (!rows[rowIndex]) {
+        return errorResponse(`Row ${rowIndex} not found in table (it has ${rows.length} rows)`);
+      }
+      if (!rows[rowIndex].tableCells?.[columnIndex]) {
+        return errorResponse(`Column ${columnIndex} not found in row ${rowIndex} (it has ${rows[rowIndex].tableCells?.length ?? 0} cells)`);
+      }
+      if (toolName === 'deleteTableRow' && rows.length === 1) {
+        return errorResponse("That is the table's only row: deleting it would delete the table (use deleteRange over the table's span for that)");
+      }
+      if (toolName === 'deleteTableColumn' && (found.table.columns ?? rows[0].tableCells?.length) === 1) {
+        return errorResponse("That is the table's only column: deleting it would delete the table (use deleteRange over the table's span for that)");
+      }
+
+      const tableCellLocation = {
+        tableStartLocation: withTab({ index: a.tableStartIndex }, a.tabId),
+        rowIndex,
+        columnIndex,
+      };
+      const request =
+        toolName === 'insertTableRow' ? { insertTableRow: { tableCellLocation, insertBelow: a.insertBelow ?? true } }
+        : toolName === 'deleteTableRow' ? { deleteTableRow: { tableCellLocation } }
+        : toolName === 'insertTableColumn' ? { insertTableColumn: { tableCellLocation, insertRight: a.insertRight ?? true } }
+        : { deleteTableColumn: { tableCellLocation } };
+      await executeBatchUpdate(ctx, a.documentId, [request], a.ifRevisionId);
+
+      const done =
+        toolName === 'insertTableRow' ? `Inserted a row ${a.insertBelow ?? true ? 'below' : 'above'} row ${rowIndex}`
+        : toolName === 'deleteTableRow' ? `Deleted row ${rowIndex}`
+        : toolName === 'insertTableColumn' ? `Inserted a column ${a.insertRight ?? true ? 'right of' : 'left of'} column ${columnIndex}`
+        : `Deleted column ${columnIndex}`;
+      // The table's start does not move (the change is inside it): read it again for the new cell ranges.
+      const after = await findDocTable(ctx, a.documentId, a.tableStartIndex, a.tabId, toolName);
+      const cells = after.table ? `\nTable at ${a.tableStartIndex} now:\n${describeTableCells(after.table)}` : '';
+      return {
+        content: [{ type: "text", text: `${done} of the table at index ${a.tableStartIndex}${a.tabId ? ` in tab ${a.tabId}` : ''}.${cells}` }],
         isError: false
       };
     }

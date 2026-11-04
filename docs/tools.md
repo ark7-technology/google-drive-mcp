@@ -1,6 +1,6 @@
 # Tool reference
 
-This server exposes 131 MCP tools across Google Drive, Docs, Sheets, Slides, and Calendar. Tool availability can depend on the granted OAuth scopes. Unless noted otherwise, every tool also accepts the optional top-level `account` parameter described in [Authentication](authentication.md#per-tool-account-selection).
+This server exposes 135 MCP tools across Google Drive, Docs, Sheets, Slides, and Calendar. Tool availability can depend on the granted OAuth scopes. Unless noted otherwise, every tool also accepts the optional top-level `account` parameter described in [Authentication](authentication.md#per-tool-account-selection).
 
 ## Available Tools
 
@@ -343,6 +343,32 @@ different identifiers; neither is accepted as a lock.
   - `columnIndex`: Column index (0-based)
   - `textContent`: New text content (optional)
   - `bold`, `italic`, `fontSize`, `alignment`: Cell styling (optional)
+
+- **insertTableRow** - Insert a row above or below a reference row of an existing table; the new row takes the reference row's cell styles, and the other rows keep their content, links and bookmarks. Returns the table's new cell ranges. Accepts [`ifRevisionId`](#ifrevisionid)
+  - `documentId`, `tableStartIndex`: Document and the table's start index (`tableStartIndex=N` on the table's span line)
+  - `rowIndex`: Reference row (0-based)
+  - `columnIndex` (optional): Reference cell's column (default 0; matters only with merged cells)
+  - `insertBelow` (optional): Below the reference row (default true); `false` inserts above
+  - `tabId` (optional): Tab containing the table
+
+- **deleteTableRow** - Delete a row of an existing table (not its only row). Returns the table's new cell ranges. Accepts [`ifRevisionId`](#ifrevisionid)
+  - `documentId`, `tableStartIndex`: Document and the table's start index
+  - `rowIndex`: Row to delete (0-based)
+  - `columnIndex` (optional): Cell's column (default 0; matters only with merged cells)
+  - `tabId` (optional): Tab containing the table
+
+- **insertTableColumn** - Insert a column left or right of a reference column of an existing table; the new column takes the reference column's cell styles. Returns the table's new cell ranges. Accepts [`ifRevisionId`](#ifrevisionid)
+  - `documentId`, `tableStartIndex`: Document and the table's start index
+  - `columnIndex`: Reference column (0-based)
+  - `rowIndex` (optional): Reference cell's row (default 0; matters only with merged cells)
+  - `insertRight` (optional): Right of the reference column (default true); `false` inserts left
+  - `tabId` (optional): Tab containing the table
+
+- **deleteTableColumn** - Delete a column of an existing table (not its only column). Returns the table's new cell ranges. Accepts [`ifRevisionId`](#ifrevisionid)
+  - `documentId`, `tableStartIndex`: Document and the table's start index
+  - `columnIndex`: Column to delete (0-based)
+  - `rowIndex` (optional): Cell's row (default 0; matters only with merged cells)
+  - `tabId` (optional): Tab containing the table
 
 - **styleDocTable** - Style a Docs table in one atomic call (cell borders, background, padding, content alignment, column widths, row heights). Accepts [`ifRevisionId`](#ifrevisionid)
   - `documentId`: Document ID
