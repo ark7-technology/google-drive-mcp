@@ -2104,6 +2104,18 @@ const InsertTextSchema = z.object({
   message: "Provide exactly one of index or textToFind"
 });
 
+const InsertPageBreakSchema = z.object({
+  documentId: z.string().min(1, "Document ID is required"),
+  index: z.number().int().min(1, "Index must be at least 1 (1-based)").optional(),
+  textToFind: z.string().min(1).optional(),
+  matchInstance: z.number().int().min(1).optional().default(1),
+  position: z.enum(['before', 'after']).optional().default('before'),
+  tabId: z.string().optional(),
+  ifRevisionId: z.string().optional()
+}).refine(data => (data.index !== undefined) !== (data.textToFind !== undefined), {
+  message: "Provide exactly one of index or textToFind"
+});
+
 const DeleteRangeSchema = z.object({
   documentId: z.string().min(1, "Document ID is required"),
   startIndex: z.number().int().min(0, "Start index must be non-negative").optional(),
@@ -2579,6 +2591,23 @@ export const toolDefinitions: ToolDefinition[] = [
         ifRevisionId: { type: "string", description: "Optional optimistic lock: a revisionId from readGoogleDoc, getGoogleDocContent, getGoogleDocContentPaginated, or getDocumentInfo. The write fails cleanly if the document changed since that read. Valid for 24 hours, and only for the account that read it. Google Docs only." }
       },
       required: ["documentId", "text"]
+    }
+  },
+  {
+    name: "insertPageBreak",
+    description: "Insert a page break into a Google Doc (Docs API insertPageBreak), as Ctrl+Enter does: a page break followed by a new paragraph. Put it before a heading's text (textToFind, position before — the default) and the break gets a paragraph of its own just above the heading, with the heading's style. A real page-break element, unlike paragraph style pageBreakBefore, which exporters such as the Edgar add-on ignore. Not inside tables, footnotes, headers or footers. Returns the break's index.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        documentId: { type: "string", description: "The Google Doc ID" },
+        index: { type: "number", description: "1-based Docs API index to insert at. Provide exactly one of index or textToFind." },
+        textToFind: { type: "string", description: "Locate the insertion point by text instead of index (exact, case-sensitive match), e.g. a heading. Combine with position and matchInstance." },
+        matchInstance: { type: "number", description: "Which instance of textToFind (default: 1)" },
+        position: { type: "string", enum: ["before", "after"], description: "Insert before or after the matched text (default: before). Only used with textToFind." },
+        tabId: { type: "string", description: "Optional. Tab ID to insert into (from listDocumentTabs). If omitted, inserts into the first/default tab." },
+        ifRevisionId: { type: "string", description: "Optional optimistic lock: a revisionId from readGoogleDoc, getGoogleDocContent, getGoogleDocContentPaginated, or getDocumentInfo. The write fails cleanly if the document changed since that read. Valid for 24 hours, and only for the account that read it. Google Docs only." }
+      },
+      required: ["documentId"]
     }
   },
   {
@@ -3713,6 +3742,42 @@ export async function handleTool(toolName: string, args: Record<string, unknown>
       return errorResponse(
         `File "${fileName}" has MIME type "${mimeType}". insertText only supports Google Docs (application/vnd.google-apps.document) and text/* files.`
       );
+    }
+
+    case "insertPageBreak": {
+      const validation = InsertPageBreakSchema.safeParse(args);
+      if (!validation.success) {
+        return errorResponse(validation.error.errors[0].message);
+      }
+      const a = validation.data;
+
+      let index: number;
+      let targetNote = '';
+      if (a.textToFind !== undefined) {
+        const range = await findTextRange(ctx, a.documentId, a.textToFind, a.matchInstance, a.tabId);
+        if (range && 'error' in range) {
+          return errorResponse(range.error);
+        }
+        if (!range) {
+          return errorResponse(`Text "${a.textToFind}" not found in document`);
+        }
+        index = a.position === 'before' ? range.startIndex : range.endIndex;
+        // As insertText: nothing goes in after the segment's final paragraph break.
+        if (range.segmentEndIndex !== undefined && index >= range.segmentEndIndex) {
+          index = range.segmentEndIndex - 1;
+        }
+        targetNote = ` (${a.position} "${a.textToFind}"${a.matchInstance > 1 ? ` match ${a.matchInstance}` : ''})`;
+      } else {
+        index = a.index!;
+      }
+
+      await executeBatchUpdate(ctx, a.documentId, [{ insertPageBreak: { location: withTab({ index }, a.tabId) } }], a.ifRevisionId);
+
+      // The break and the paragraph end after it take two indices: what followed now starts at index + 2.
+      return {
+        content: [{ type: "text", text: `Inserted a page break at index ${index}${targetNote}${a.tabId ? ` in tab ${a.tabId}` : ''}; what followed it now starts at index ${index + 2}` }],
+        isError: false
+      };
     }
 
     case "deleteRange": {

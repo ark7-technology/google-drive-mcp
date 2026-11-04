@@ -301,7 +301,7 @@ describe('Documentation reference', () => {
       // Google API field names
       'byteLength', 'contentUri', 'createdTime', 'dataBase64', 'externalOnly',
       'fileOrganizer', 'fullText', 'hangoutsMeet', 'hiddenByUser', 'horizontalRule',
-      'mimeType', 'modifiedTime', 'nextOffset', 'objectId', 'revisionId', 'startTime',
+      'mimeType', 'modifiedTime', 'nextOffset', 'objectId', 'pageBreakBefore', 'revisionId', 'startTime',
       // Parameters shared across tools, named in prose by tools that take them
       'ifRevisionId',
       // Sheets CellData, ExtendedValue and dimension-metadata field names

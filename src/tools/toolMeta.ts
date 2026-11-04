@@ -103,6 +103,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   createDocFromHTML: write(DRIVE_WRITE_SCOPES),
   updateGoogleDoc: write(DOCS_WRITE_SCOPES),
   insertText: write(DOCS_WRITE_SCOPES),
+  insertPageBreak: write(DOCS_WRITE_SCOPES),
   deleteRange: write(DOCS_WRITE_SCOPES),
   applyTextStyle: write(DOCS_WRITE_SCOPES),
   applyParagraphStyle: write(DOCS_WRITE_SCOPES),

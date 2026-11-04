@@ -1,6 +1,6 @@
 # Tool reference
 
-This server exposes 135 MCP tools across Google Drive, Docs, Sheets, Slides, and Calendar. Tool availability can depend on the granted OAuth scopes. Unless noted otherwise, every tool also accepts the optional top-level `account` parameter described in [Authentication](authentication.md#per-tool-account-selection).
+This server exposes 136 MCP tools across Google Drive, Docs, Sheets, Slides, and Calendar. Tool availability can depend on the granted OAuth scopes. Unless noted otherwise, every tool also accepts the optional top-level `account` parameter described in [Authentication](authentication.md#per-tool-account-selection).
 
 ## Available Tools
 
@@ -277,6 +277,11 @@ different identifiers; neither is accepted as a lock.
   - `documentId`: Document ID
   - `text`: Text to insert
   - Target (use one): `index` (1-based position) OR `textToFind`+`matchInstance` with `position` (`before`/`after`, default `after`; Google Docs only; exact, case-sensitive match). A match ending at the document's final paragraph break inserts `after` just before that break
+
+- **insertPageBreak** - Insert a page break (as Ctrl+Enter does: a break followed by a new paragraph). Before a heading's text, the break gets a paragraph of its own just above the heading, with its style. A real page-break element, unlike paragraph style `pageBreakBefore`, which exporters such as the Edgar add-on ignore. Not inside tables, footnotes, headers or footers. Accepts [`ifRevisionId`](#ifrevisionid)
+  - `documentId`: Document ID
+  - Target (use one): `index` (1-based position) OR `textToFind`+`matchInstance` with `position` (`before`/`after`, default `before`; exact, case-sensitive match)
+  - `tabId` (optional): Tab to insert into
 
 - **deleteRange** - Delete an index range or found text. Accepts [`ifRevisionId`](#ifrevisionid) on Google Docs; it is refused on text files rather than ignored
   - `documentId`: Document ID

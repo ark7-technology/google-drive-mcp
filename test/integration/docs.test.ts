@@ -357,6 +357,49 @@ describe('Docs tools', () => {
     });
   });
 
+  // --- insertPageBreak ---
+  describe('insertPageBreak', () => {
+    const lastRequests = () => {
+      const calls = ctx.mocks.docs.tracker.getCalls('documents.batchUpdate');
+      return calls[calls.length - 1].args[0].requestBody;
+    };
+
+    it('goes before a heading found by text, by default, and says where what followed starts', async () => {
+      ctx.mocks.docs.service.documents.get._setImpl(async () => ({
+        data: {
+          documentId: 'doc-1',
+          body: { content: [
+            { startIndex: 1, endIndex: 7, paragraph: { elements: [{ textRun: { content: 'Intro\n' }, startIndex: 1, endIndex: 7 }] } },
+            { startIndex: 7, endIndex: 22, paragraph: { elements: [{ textRun: { content: 'NOTE 3: GOING\n' }, startIndex: 7, endIndex: 22 }] } },
+          ] },
+        },
+      }));
+      const res = await callTool(ctx.client, 'insertPageBreak', { documentId: 'doc-1', textToFind: 'NOTE 3', ifRevisionId: 'rev-1' });
+      assert.equal(res.isError, false);
+      const body = lastRequests();
+      assert.deepEqual(body.requests, [{ insertPageBreak: { location: { index: 7 } } }]);
+      assert.equal(body.writeControl.requiredRevisionId, 'rev-1');
+      assert.ok(res.content[0].text!.includes('page break at index 7 (before "NOTE 3")'));
+      assert.ok(res.content[0].text!.includes('now starts at index 9'));
+    });
+
+    it('takes an index and a tab', async () => {
+      const res = await callTool(ctx.client, 'insertPageBreak', { documentId: 'doc-1', index: 40, tabId: 't.2' });
+      assert.equal(res.isError, false);
+      assert.deepEqual(lastRequests().requests, [{ insertPageBreak: { location: { index: 40, tabId: 't.2' } } }]);
+    });
+
+    it('needs exactly one of index or textToFind; a missing text is an error', async () => {
+      const none = await callTool(ctx.client, 'insertPageBreak', { documentId: 'doc-1' });
+      assert.equal(none.isError, true);
+      const both = await callTool(ctx.client, 'insertPageBreak', { documentId: 'doc-1', index: 1, textToFind: 'x' });
+      assert.ok(both.content[0].text!.includes('exactly one'));
+      ctx.mocks.docs.service.documents.get._setImpl(async () => ({ data: { documentId: 'doc-1', body: { content: [] } } }));
+      const missing = await callTool(ctx.client, 'insertPageBreak', { documentId: 'doc-1', textToFind: 'nope' });
+      assert.ok(missing.content[0].text!.includes('not found'));
+    });
+  });
+
   // --- deleteRange ---
   describe('deleteRange', () => {
     beforeEach(() => {
