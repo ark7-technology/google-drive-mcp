@@ -3654,6 +3654,50 @@ describe('Docs tools', () => {
         assert.ok(res.content[0].text!.includes('in tab tab-2'));
         assert.equal(lastRequests()[0].insertPerson.location.tabId, 'tab-2');
       });
+
+      it('inserts a date chip: a bare day at noon UTC, formats mapped to the API enums', async () => {
+        const res = await callTool(ctx.client, 'insertSmartChip', {
+          documentId: 'doc-1', index: 5, chipType: 'date', date: '2026-11-05', dateFormat: 'ISO8601', locale: 'zh-CN',
+        });
+        assert.equal(res.isError, false);
+        assert.deepEqual(lastRequests()[0], {
+          insertDate: {
+            dateElementProperties: { timestamp: '2026-11-05T12:00:00.000Z', dateFormat: 'DATE_FORMAT_ISO8601', locale: 'zh-CN' },
+            location: { index: 5 },
+          },
+        });
+        await callTool(ctx.client, 'insertSmartChip', {
+          documentId: 'doc-1', index: 5, chipType: 'date', date: '2026-11-05T09:30:00-08:00', timeFormat: 'HOUR_MINUTE_TIMEZONE', timeZone: 'America/Los_Angeles',
+        });
+        assert.deepEqual(lastRequests()[0].insertDate.dateElementProperties, {
+          timestamp: '2026-11-05T17:30:00.000Z', timeFormat: 'TIME_FORMAT_HOUR_MINUTE_TIMEZONE', timeZoneId: 'America/Los_Angeles',
+        });
+      });
+
+      it('inserts a rich link chip for a Google link', async () => {
+        const url = 'https://drive.google.com/drive/folders/1Fln7ZGNgBkQDh-OHSeKRG3JDwXxjUVEr';
+        const res = await callTool(ctx.client, 'insertSmartChip', { documentId: 'doc-1', index: 3, chipType: 'richLink', url, ifRevisionId: 'rev-9' });
+        assert.equal(res.isError, false);
+        assert.deepEqual(lastRequests()[0], { insertRichLink: { richLinkProperties: { uri: url }, location: { index: 3 } } });
+      });
+
+      it('refuses, before writing, what Docs would refuse', async () => {
+        const before = ctx.mocks.docs.tracker.getCalls('documents.batchUpdate').length;
+        const cases: [Record<string, unknown>, string][] = [
+          [{ chipType: 'date' }, 'date is required'],
+          [{ chipType: 'date', date: '2026-02-30' }, 'is not a date'],
+          [{ chipType: 'date', date: '2026-11-05', timeZone: 'America/Los_Angeles' }, 'HOUR_MINUTE_TIMEZONE only'],
+          [{ chipType: 'richLink' }, 'url is required'],
+          [{ chipType: 'richLink', url: 'https://www.example.com/report' }, 'takes a Google link'],
+          [{ chipType: 'person' }, 'personEmail is required'],
+        ];
+        for (const [a, msg] of cases) {
+          const res = await callTool(ctx.client, 'insertSmartChip', { documentId: 'doc-1', index: 1, ...a });
+          assert.equal(res.isError, true, JSON.stringify(a));
+          assert.ok(res.content[0].text!.includes(msg), `${JSON.stringify(a)}: ${res.content[0].text}`);
+        }
+        assert.equal(ctx.mocks.docs.tracker.getCalls('documents.batchUpdate').length, before);
+      });
     });
 
     // The no-tabId path must stay byte-for-byte the cheap one: a narrow-field

@@ -298,10 +298,11 @@ describe('Documentation reference', () => {
       'anyOf', 'maxItems',
       // Google API methods and request types
       'batchUpdate', 'updateCells', 'updatePageElementsZOrder', 'tableStartLocation',
+      'insertDate', 'insertPerson', 'insertRichLink',
       // Google API field names
       'byteLength', 'contentUri', 'createdTime', 'dataBase64', 'externalOnly',
       'fileOrganizer', 'fullText', 'hangoutsMeet', 'hiddenByUser', 'horizontalRule',
-      'mimeType', 'modifiedTime', 'nextOffset', 'objectId', 'pageBreakBefore', 'revisionId', 'startTime',
+      'mimeType', 'modifiedTime', 'nextOffset', 'objectId', 'pageBreakBefore', 'revisionId', 'richLink', 'startTime',
       // Parameters shared across tools, named in prose by tools that take them
       'ifRevisionId',
       // Sheets CellData, ExtendedValue and dimension-metadata field names

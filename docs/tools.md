@@ -234,13 +234,19 @@ different identifiers; neither is accepted as a lock.
   - `tabId`: Tab ID
   - `title`: New tab title
 
-- **insertSmartChip** - Insert a person smart chip (mention) at a document index. Only person chips are supported by the Docs API; date and file chips are read-only. Accepts [`ifRevisionId`](#ifrevisionid)
+- **insertSmartChip** - Insert a smart chip at a document index: a person (mention), a date, or a rich link (a Drive file, Doc, Sheet or Slides link shown as a chip with its title — Google links only; Docs refuses other sites'). Accepts [`ifRevisionId`](#ifrevisionid)
   - `documentId`: Document ID
   - `index`: Insertion index (1-based)
-  - `chipType`: `person` (only supported type)
-  - `personEmail`: Email address for the person mention
+  - `chipType`: `person`, `date` or `richLink`
+  - `personEmail`: person — email address of the person
+  - `date`: date — the day (`YYYY-MM-DD`, shown as that day in any time zone) or an ISO date-time
+  - `dateFormat` (optional): date — `MONTH_DAY_YEAR_ABBREVIATED` (default), `MONTH_DAY_ABBREVIATED`, `MONTH_DAY_FULL` or `ISO8601`
+  - `timeFormat` (optional): date — `NONE` (default), `HOUR_MINUTE` or `HOUR_MINUTE_TIMEZONE`
+  - `timeZone` (optional): date — CLDR time zone the time shows in; only with `HOUR_MINUTE_TIMEZONE`
+  - `locale` (optional): date — language it is written in (default `en`)
+  - `url`: richLink — the Google link
 
-- **readSmartChips** - Read smart chip-like elements (person mentions, rich links, date chips) from the default tab of a document. Only the default tab is scanned; other tabs are not included.
+- **readSmartChips** - Read smart chips (person mentions, rich links, date chips with their shown text) from the default tab of a document. Only the default tab is scanned; other tabs are not included.
   - `documentId`: Document ID
 
 - **createFootnote** - Create a footnote in a Google Doc. Footnotes cannot be inserted inside equations, headers, footers, or other footnotes. Accepts [`ifRevisionId`](#ifrevisionid) on the creating call

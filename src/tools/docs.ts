@@ -2447,11 +2447,39 @@ const RenameDocumentTabSchema = z.object({
 const InsertSmartChipSchema = z.object({
   documentId: z.string().min(1, "Document ID is required"),
   index: z.number().int().min(1, "Index must be at least 1"),
-  chipType: z.enum(["person"]),
-  personEmail: z.string().email("Valid email is required for person chip"),
+  chipType: z.enum(["person", "date", "richLink"]),
+  personEmail: z.string().email("Valid email is required for person chip").optional(),
+  date: z.string().optional(),
+  dateFormat: z.enum(["MONTH_DAY_YEAR_ABBREVIATED", "MONTH_DAY_ABBREVIATED", "MONTH_DAY_FULL", "ISO8601"]).optional(),
+  timeFormat: z.enum(["NONE", "HOUR_MINUTE", "HOUR_MINUTE_TIMEZONE"]).optional(),
+  timeZone: z.string().optional(),
+  locale: z.string().optional(),
+  url: z.string().url("A valid URL is required for a rich link chip").optional(),
   tabId: z.string().optional(),
   ifRevisionId: z.string().optional(),
+}).superRefine((a, ctx) => {
+  if (a.chipType === 'person' && !a.personEmail) ctx.addIssue({ code: 'custom', message: "personEmail is required for a person chip" });
+  if (a.chipType === 'date' && !a.date) ctx.addIssue({ code: 'custom', message: "date is required for a date chip (YYYY-MM-DD, or an ISO date-time)" });
+  if (a.chipType === 'richLink' && !a.url) ctx.addIssue({ code: 'custom', message: "url is required for a rich link chip" });
+  // Docs refuses a time zone the chip does not show (checked live 2026-11-05).
+  if (a.timeZone && a.timeFormat !== 'HOUR_MINUTE_TIMEZONE')
+    ctx.addIssue({ code: 'custom', message: "timeZone goes with timeFormat HOUR_MINUTE_TIMEZONE only (Docs refuses it otherwise)" });
+  // Rich links are Google's (Drive files, Docs, Sheets, Slides…): Docs answers "The URL is invalid" to others.
+  if (a.chipType === 'richLink' && a.url && !/^https:\/\/([a-z0-9-]+\.)*google\.com\//i.test(a.url))
+    ctx.addIssue({ code: 'custom', message: "a rich link chip takes a Google link (Drive, Docs, Sheets, Slides…); put other links in as text with applyTextStyle's link" });
 });
+
+/**
+ * A date chip's point in time (RFC 3339, UTC). A bare day is taken at noon UTC, so it shows as that day in every time
+ * zone from UTC-11 to UTC+11 — midnight UTC would show as the day before in the Americas.
+ */
+export function dateChipTimestamp(date: string): string | undefined {
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date.trim());
+  const t = day ? Date.UTC(+day[1], +day[2] - 1, +day[3], 12) : Date.parse(date);
+  if (!Number.isFinite(t)) return undefined;
+  if (day && new Date(t).toISOString().slice(0, 10) !== date.trim()) return undefined; // 2026-02-30
+  return new Date(t).toISOString();
+}
 
 const ReadSmartChipsSchema = z.object({
   documentId: z.string().min(1, "Document ID is required"),
@@ -3121,18 +3149,24 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: "insertSmartChip",
-    description: "Insert a person smart chip (mention) at a document index. Only person chips are supported by the Docs API; date and file chips are read-only.",
+    description: "Insert a smart chip at a document index: a person (mention), a date, or a rich link (a Drive file, Doc, Sheet or Slides link shown as a chip with its title — Google links only). Docs API insertPerson / insertDate / insertRichLink. A date chip of a bare day (YYYY-MM-DD) shows that day in any time zone.",
     inputSchema: {
       type: "object",
       properties: {
         documentId: { type: "string", description: "Document ID" },
         index: { type: "number", description: "Insertion index (1-based)" },
-        chipType: { type: "string", enum: ["person"], description: "Smart chip type (only 'person' is supported)" },
-        personEmail: { type: "string", description: "Email address for the person mention" },
+        chipType: { type: "string", enum: ["person", "date", "richLink"], description: "Smart chip type" },
+        personEmail: { type: "string", description: "person: email address of the person" },
+        date: { type: "string", description: "date: the day (YYYY-MM-DD) or an ISO date-time (2026-11-05T09:30:00-08:00)" },
+        dateFormat: { type: "string", enum: ["MONTH_DAY_YEAR_ABBREVIATED", "MONTH_DAY_ABBREVIATED", "MONTH_DAY_FULL", "ISO8601"], description: "date: how the day shows (default MONTH_DAY_YEAR_ABBREVIATED, e.g. Nov 5, 2026)" },
+        timeFormat: { type: "string", enum: ["NONE", "HOUR_MINUTE", "HOUR_MINUTE_TIMEZONE"], description: "date: whether the time shows (default NONE)" },
+        timeZone: { type: "string", description: "date: CLDR time zone the time shows in, e.g. America/Los_Angeles — only with timeFormat HOUR_MINUTE_TIMEZONE" },
+        locale: { type: "string", description: "date: language code it is written in, e.g. en, zh-CN (default en)" },
+        url: { type: "string", description: "richLink: a Google link — a Drive file, Doc, Sheet or Slides URL (Docs refuses other sites' links)" },
         ifRevisionId: { type: "string", description: "Optional optimistic lock: a revisionId from readGoogleDoc, getGoogleDocContent, getGoogleDocContentPaginated, or getDocumentInfo. The write fails cleanly if the document changed since that read. Valid for 24 hours, and only for the account that read it. Google Docs only." },
         tabId: { type: "string", description: "Optional. Tab ID to insert into (from listDocumentTabs). If omitted, inserts into the first/default tab." }
       },
-      required: ["documentId", "index", "chipType", "personEmail"]
+      required: ["documentId", "index", "chipType"]
     }
   },
   {
@@ -5542,30 +5576,34 @@ export async function handleTool(toolName: string, args: Record<string, unknown>
       const validation = InsertSmartChipSchema.safeParse(args);
       if (!validation.success) return errorResponse(validation.error.errors[0].message);
       const a = validation.data;
+      const location = withTab({ index: a.index }, a.tabId);
+
+      let request: Record<string, unknown>;
+      let what: string;
+      if (a.chipType === 'date') {
+        const timestamp = dateChipTimestamp(a.date!);
+        if (!timestamp) return errorResponse(`date "${a.date}" is not a date: use YYYY-MM-DD or an ISO date-time`);
+        const props: Record<string, unknown> = { timestamp };
+        if (a.dateFormat) props.dateFormat = `DATE_FORMAT_${a.dateFormat}`;
+        if (a.timeFormat) props.timeFormat = a.timeFormat === 'NONE' ? 'TIME_FORMAT_DISABLED' : `TIME_FORMAT_${a.timeFormat}`;
+        if (a.timeZone) props.timeZoneId = a.timeZone;
+        if (a.locale) props.locale = a.locale;
+        request = { insertDate: { dateElementProperties: props, location } };
+        what = `date chip for ${a.date}`;
+      } else if (a.chipType === 'richLink') {
+        request = { insertRichLink: { richLinkProperties: { uri: a.url }, location } };
+        what = `rich link chip for ${a.url}`;
+      } else {
+        request = { insertPerson: { personProperties: { email: a.personEmail }, location } };
+        what = `person smart chip for ${a.personEmail}`;
+      }
 
       // tabId passed through unvalidated by design (see insertTable): no GET on
-      // this pure batchUpdate path, so a bad tabId yields the raw Google error.
-      const docs = ctx.google.docs({ version: 'v1', auth: ctx.authClient });
-      await withRetry(
-        (signal) => docs.documents.batchUpdate({
-          documentId: a.documentId,
-          requestBody: {
-            requests: [{
-              insertPerson: {
-                personProperties: { email: a.personEmail },
-                location: withTab({ index: a.index }, a.tabId),
-              },
-            // insertPerson is not yet in the googleapis TypeScript types — cast required
-            } as any],
-            ...writeControlFor(a.ifRevisionId),
-          },
-        }, { signal }),
-        { ...ctx.runtimeConfig, retryMax: 0 },
-        'docs.documents.batchUpdate(insertSmartChip)',
-        ctx.log
-      );
+      // this pure batchUpdate path, so a bad tabId yields Google's error.
+      // insertPerson / insertDate / insertRichLink are not in the googleapis TypeScript types yet: executeBatchUpdate takes any[].
+      await executeBatchUpdate(ctx, a.documentId, [request], a.ifRevisionId);
 
-      return { content: [{ type: 'text', text: `Inserted person smart chip for ${a.personEmail} at index ${a.index}${a.tabId ? ` in tab ${a.tabId}` : ''}.` }], isError: false };
+      return { content: [{ type: 'text', text: `Inserted ${what} at index ${a.index}${a.tabId ? ` in tab ${a.tabId}` : ''}.` }], isError: false };
     }
 
     case "readSmartChips": {
@@ -5586,9 +5624,12 @@ export async function handleTool(toolName: string, args: Record<string, unknown>
         for (const el of block?.paragraph?.elements || []) {
           if (el?.richLink) hits.push(`richLink: ${el.richLink.richLinkProperties?.uri || 'unknown'}`);
           if (el?.person) hits.push(`person: ${el.person.personProperties?.email || 'unknown'}`);
+          if (el?.dateElement) {
+            const d = el.dateElement.dateElementProperties ?? {};
+            hits.push(`date: ${d.displayText || d.timestamp || 'unknown'}${d.timestamp ? ` (${d.timestamp})` : ''}`);
+          }
         }
       }
-      // Date chips appear as richLink elements in the Docs API model — already covered above.
       return { content: [{ type: 'text', text: hits.length ? hits.join('\n') : 'No smart chips detected (note: only the default tab is scanned).' }], isError: false };
     }
 
