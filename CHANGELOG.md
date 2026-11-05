@@ -11,6 +11,10 @@ All notable changes to this project will be documented in this file.
 - **docs:** `insertPageBreak` inserts a real page break (the Docs API request of the same name, what Ctrl+Enter makes), targeted like `insertText` by `index` or `textToFind` with `position` — `before` by default, so naming a heading puts the break in its own paragraph just above it. Paragraph style `pageBreakBefore` was the only way before, and exporters that look for page-break elements, such as the Edgar add-on, ignore it. Taking the server from 135 tools to 136
 - **docs:** `insertSmartChip` inserts date chips (`insertDate`: a bare `YYYY-MM-DD` at noon UTC, so it shows as that day in any time zone; `dateFormat`, `timeFormat`, `timeZone`, `locale`) and rich link chips (`insertRichLink`, Google links only) besides person chips; the Docs API now has both requests. What Docs would refuse — another site's link, a time zone without `HOUR_MINUTE_TIMEZONE`, an impossible date — is refused first with the reason. `readSmartChips` reads date chips (`dateElement`), with the text they show
 
+### Fixed
+
+- **docs:** `readSmartChips` read only the body's own paragraphs, so a chip in a table cell (an `@Include()` cell of a filing template) was not found. It now reads table cells, nested tables and a table of contents, gives each chip its index and cell (`table@<start> r<row>c<col>`, nested ones joined by ` > `) and a rich link's title, and takes `tabId` to read another tab (Ark7 Engineering #32)
+
 ## [2.13.0](https://github.com/piotr-agier/google-drive-mcp/compare/v2.12.0...v2.13.0) (2026-10-15)
 
 ### Added

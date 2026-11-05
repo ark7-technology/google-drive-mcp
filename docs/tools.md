@@ -246,8 +246,9 @@ different identifiers; neither is accepted as a lock.
   - `locale` (optional): date — language it is written in (default `en`)
   - `url`: richLink — the Google link
 
-- **readSmartChips** - Read smart chips (person mentions, rich links, date chips with their shown text) from the default tab of a document. Only the default tab is scanned; other tabs are not included.
+- **readSmartChips** - Read the smart chips (person mentions, rich links, date chips with their shown text) of a document tab — in paragraphs, table cells (nested tables too) and a table of contents — each with its index and, in a table, its cell (`table@<start> r<row>c<col>`)
   - `documentId`: Document ID
+  - `tabId` (optional): Tab to read (default: the first tab)
 
 - **createFootnote** - Create a footnote in a Google Doc. Footnotes cannot be inserted inside equations, headers, footers, or other footnotes. Accepts [`ifRevisionId`](#ifrevisionid) on the creating call
   - `documentId`: Document ID

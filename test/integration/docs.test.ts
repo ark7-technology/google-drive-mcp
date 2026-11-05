@@ -3486,6 +3486,38 @@ describe('Docs tools', () => {
       const res = await callTool(ctx.client, 'readSmartChips', { documentId: 'doc-1' });
       assert.equal(res.isError, false);
     });
+
+    it('readSmartChips reads chips in table cells, nested tables too, with where they are (Engineering #32)', async () => {
+      const para = (startIndex: number, el: Record<string, unknown>) => ({ paragraph: { elements: [{ startIndex, ...el }] } });
+      const link = { richLink: { richLinkProperties: { uri: 'https://docs.google.com/document/d/X/edit', title: 'Notes v1.1' } } };
+      ctx.mocks.docs.service.documents.get._setImpl(async () => ({
+        data: {
+          body: {
+            content: [
+              para(1, link),
+              {
+                startIndex: 7,
+                table: {
+                  tableRows: [{
+                    tableCells: [
+                      { content: [para(10, link)] },
+                      { content: [{ startIndex: 14, table: { tableRows: [{ tableCells: [{ content: [para(17, { person: { personProperties: { email: 'a@b.com' } } })] }] }] } }] },
+                    ],
+                  }],
+                },
+              },
+            ],
+          },
+        },
+      }));
+      const res = await callTool(ctx.client, 'readSmartChips', { documentId: 'doc-1' });
+      assert.equal(res.isError, false);
+      assert.deepEqual(res.content[0].text!.split('\n'), [
+        'richLink: https://docs.google.com/document/d/X/edit "Notes v1.1" [1]',
+        'richLink: https://docs.google.com/document/d/X/edit "Notes v1.1" [10] in table@7 r0c0',
+        'person: a@b.com [17] in table@7 r0c1 > table@14 r0c0',
+      ]);
+    });
   });
 
   describe('createFootnote', () => {

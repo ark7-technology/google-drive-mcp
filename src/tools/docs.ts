@@ -2483,7 +2483,41 @@ export function dateChipTimestamp(date: string): string | undefined {
 
 const ReadSmartChipsSchema = z.object({
   documentId: z.string().min(1, "Document ID is required"),
+  tabId: z.string().optional(),
 });
+
+/**
+ * Every smart chip in a body's content — paragraphs, table cells (nested tables too) and a table of contents — with
+ * its index and, inside a table, where: `table@<start> r<row>c<col>`, nested ones joined by ` > ` (Engineering #32:
+ * a chip in a table cell was not read).
+ */
+export function collectSmartChips(content: any[] | undefined, where = ''): string[] {
+  const hits: string[] = [];
+  for (const block of content ?? []) {
+    for (const el of block?.paragraph?.elements ?? []) {
+      const at = `[${el.startIndex ?? '?'}]${where ? ` in ${where}` : ''}`;
+      if (el?.richLink) {
+        const rl = el.richLink.richLinkProperties ?? {};
+        hits.push(`richLink: ${rl.uri || 'unknown'}${rl.title ? ` "${rl.title}"` : ''} ${at}`);
+      }
+      if (el?.person) hits.push(`person: ${el.person.personProperties?.email || 'unknown'} ${at}`);
+      if (el?.dateElement) {
+        const d = el.dateElement.dateElementProperties ?? {};
+        hits.push(`date: ${d.displayText || d.timestamp || 'unknown'}${d.timestamp ? ` (${d.timestamp})` : ''} ${at}`);
+      }
+    }
+    if (block?.table) {
+      (block.table.tableRows ?? []).forEach((row: any, r: number) =>
+        (row.tableCells ?? []).forEach((cell: any, c: number) => {
+          const here = `table@${block.startIndex ?? '?'} r${r}c${c}`;
+          hits.push(...collectSmartChips(cell.content, where ? `${where} > ${here}` : here));
+        }),
+      );
+    }
+    if (block?.tableOfContents) hits.push(...collectSmartChips(block.tableOfContents.content, where ? `${where} > table of contents` : 'table of contents'));
+  }
+  return hits;
+}
 
 const CreateFootnoteSchema = z.object({
   documentId: z.string().min(1, "Document ID is required"),
@@ -3171,11 +3205,12 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: "readSmartChips",
-    description: "Read smart chip-like elements (person mentions, rich links, date chips) from the default tab of a document",
+    description: "Read the smart chips (person mentions, rich links, date chips with their shown text) of a document tab — in paragraphs, table cells (nested tables too) and a table of contents — each with its index and, in a table, its cell (table@<start> r<row>c<col>).",
     inputSchema: {
       type: "object",
       properties: {
-        documentId: { type: "string", description: "Document ID" }
+        documentId: { type: "string", description: "Document ID" },
+        tabId: { type: "string", description: "Optional. Tab ID to read (from listDocumentTabs). If omitted, reads the first/default tab." }
       },
       required: ["documentId"]
     }
@@ -5611,26 +5646,24 @@ export async function handleTool(toolName: string, args: Record<string, unknown>
       if (!validation.success) return errorResponse(validation.error.errors[0].message);
       const a = validation.data;
 
-      const docs = ctx.google.docs({ version: 'v1', auth: ctx.authClient });
-      const doc = await withRetry(
-        (signal) => docs.documents.get({ documentId: a.documentId }, { signal }),
-        ctx.runtimeConfig,
-        'docs.documents.get(readSmartChips)',
-        ctx.log
-      );
-      const body = (doc.data as any).body?.content || [];
-      const hits: string[] = [];
-      for (const block of body) {
-        for (const el of block?.paragraph?.elements || []) {
-          if (el?.richLink) hits.push(`richLink: ${el.richLink.richLinkProperties?.uri || 'unknown'}`);
-          if (el?.person) hits.push(`person: ${el.person.personProperties?.email || 'unknown'}`);
-          if (el?.dateElement) {
-            const d = el.dateElement.dateElementProperties ?? {};
-            hits.push(`date: ${d.displayText || d.timestamp || 'unknown'}${d.timestamp ? ` (${d.timestamp})` : ''}`);
-          }
-        }
+      let content: any[] | undefined;
+      if (a.tabId) {
+        const resolved = await getTabBodyContent(ctx, a.documentId, a.tabId);
+        if (resolved.error) return errorResponse(resolved.error);
+        content = resolved.content;
+      } else {
+        const docs = ctx.google.docs({ version: 'v1', auth: ctx.authClient });
+        const doc = await withRetry(
+          (signal) => docs.documents.get({ documentId: a.documentId }, { signal }),
+          ctx.runtimeConfig,
+          'docs.documents.get(readSmartChips)',
+          ctx.log
+        );
+        content = (doc.data as any).body?.content;
       }
-      return { content: [{ type: 'text', text: hits.length ? hits.join('\n') : 'No smart chips detected (note: only the default tab is scanned).' }], isError: false };
+      const hits = collectSmartChips(content);
+      const scope = a.tabId ? `tab ${a.tabId}` : 'the default tab (pass tabId for another)';
+      return { content: [{ type: 'text', text: hits.length ? hits.join('\n') : `No smart chips detected in ${scope}.` }], isError: false };
     }
 
     case "createFootnote": {
