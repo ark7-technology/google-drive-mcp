@@ -115,6 +115,24 @@ const InsertSheetDimensionSchema = z.object({
     message: "inheritFromBefore cannot be true when inserting at index 0 (there is nothing before it)"
   });
 
+/**
+ * moveSheetDimension: rows/columns [startIndex, endIndex) move to destinationIndex, counted before they are taken
+ * out (moveDimension's own convention). A destination inside or at either edge of the range would move nothing.
+ */
+const MoveSheetDimensionSchema = z.object({
+  ...dimensionRangeFields,
+  destinationIndex: z.number().int().min(0)
+}).refine(startBeforeEnd.check, { message: startBeforeEnd.message })
+  .refine((a) => a.destinationIndex < a.startIndex || a.destinationIndex > a.endIndex, {
+    message: "destinationIndex must be before startIndex or after endIndex (a destination within [startIndex, endIndex] moves nothing)"
+  });
+
+const SetSheetHiddenSchema = z.object({
+  spreadsheetId: z.string().min(1, "Spreadsheet ID is required"),
+  sheetId: z.number().int(),
+  hidden: z.boolean()
+});
+
 const UpdateDimensionGroupSchema = z.object({
   ...dimensionRangeFields,
   depth: z.number().int().min(1, "depth must be at least 1").optional().default(1),
@@ -742,6 +760,19 @@ export const toolDefinitions: ToolDefinition[] = [
     }
   },
   {
+    name: "setSheetHidden",
+    description: "Hide or show a whole sheet/tab by sheetId (its data, formulas and references are untouched; a hidden tab still feeds formulas elsewhere). A spreadsheet must keep at least one visible sheet. To hide rows or columns inside a sheet, use hideSheetDimension.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        spreadsheetId: { type: "string", description: "Spreadsheet ID" },
+        sheetId: { type: "number", description: "Sheet ID (from getSpreadsheetInfo / listSheets)" },
+        hidden: { type: "boolean", description: "true to hide the tab, false to show it" }
+      },
+      required: ["spreadsheetId", "sheetId", "hidden"]
+    }
+  },
+  {
     name: "deleteSheet",
     description: "Delete a sheet/tab by sheetId",
     inputSchema: {
@@ -955,6 +986,22 @@ export const toolDefinitions: ToolDefinition[] = [
         inheritFromBefore: { type: "boolean", description: "Take formatting from the row/column before the insertion point (default: true when startIndex > 0, else from the one after)" }
       },
       required: ["spreadsheetId", "sheetId", "dimension", "startIndex", "endIndex"]
+    }
+  },
+  {
+    name: "moveSheetDimension",
+    description: "Move rows or columns to another position in the same sheet (one spreadsheets.batchUpdate moveDimension): values, formulas, formatting, notes and validation travel with them, and formulas anywhere that refer to them follow. Indices are 0-based and the interval is half-open [startIndex, endIndex). destinationIndex is counted BEFORE the moved rows/columns are taken out: to move columns CQ:DB (94..105) to just before CF (83), pass startIndex: 94, endIndex: 106, destinationIndex: 83; to move rows 2..3 to just after row 9, pass startIndex: 2, endIndex: 4, destinationIndex: 10. Moving part of a row/column group may change the group.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        spreadsheetId: { type: "string", description: "Spreadsheet ID" },
+        sheetId: { type: "number", description: "Sheet ID (from getSpreadsheetInfo / listSheets). The default first sheet is usually 0." },
+        dimension: { type: "string", description: "Move rows or columns", enum: ["COLUMNS", "ROWS"] },
+        startIndex: { type: "number", description: "0-based start index of the rows/columns to move (inclusive)" },
+        endIndex: { type: "number", description: "0-based end index (exclusive); must be greater than startIndex" },
+        destinationIndex: { type: "number", description: "0-based index they move to, counted before they are taken out; must be < startIndex or > endIndex" }
+      },
+      required: ["spreadsheetId", "sheetId", "dimension", "startIndex", "endIndex", "destinationIndex"]
     }
   },
   {
@@ -2143,6 +2190,21 @@ export async function handleTool(
       return { content: [{ type: 'text', text: `Renamed sheet ${a.sheetId} to "${a.newTitle}".` }], isError: false };
     }
 
+    case "setSheetHidden": {
+      const validation = SetSheetHiddenSchema.safeParse(args);
+      if (!validation.success) return errorResponse(validation.error.errors[0].message);
+      const a = validation.data;
+
+      await batchUpdateOne(ctx, a.spreadsheetId, {
+        updateSheetProperties: {
+          properties: { sheetId: a.sheetId, hidden: a.hidden },
+          fields: 'hidden',
+        },
+      });
+
+      return { content: [{ type: 'text', text: `${a.hidden ? 'Hid' : 'Showed'} sheet ${a.sheetId}.` }], isError: false };
+    }
+
     case "deleteSheet": {
       const validation = DeleteSheetSchema.safeParse(args);
       if (!validation.success) return errorResponse(validation.error.errors[0].message);
@@ -2488,6 +2550,25 @@ export async function handleTool(
       const n = a.endIndex - a.startIndex;
       const what = a.dimension === 'ROWS' ? (n === 1 ? 'row' : 'rows') : (n === 1 ? 'column' : 'columns');
       return { content: [{ type: 'text', text: `Inserted ${n} ${what} at [${a.startIndex}, ${a.endIndex}) on sheet ${a.sheetId} (formatting from the ${inheritFromBefore ? 'one before' : 'one after'}).` }], isError: false };
+    }
+
+    case "moveSheetDimension": {
+      const validation = MoveSheetDimensionSchema.safeParse(args);
+      if (!validation.success) return errorResponse(validation.error.errors[0].message);
+      const a = validation.data;
+
+      await batchUpdateOne(ctx, a.spreadsheetId, {
+        moveDimension: {
+          source: dimensionRange(a.sheetId, a.dimension, a.startIndex, a.endIndex),
+          destinationIndex: a.destinationIndex,
+        },
+      });
+
+      const n = a.endIndex - a.startIndex;
+      // Where they are now: destinationIndex counts the moved ones, so a move forward lands n earlier.
+      const newStart = a.destinationIndex < a.startIndex ? a.destinationIndex : a.destinationIndex - n;
+      const what = a.dimension === 'ROWS' ? (n === 1 ? 'row' : 'rows') : (n === 1 ? 'column' : 'columns');
+      return { content: [{ type: 'text', text: `Moved ${n} ${what} [${a.startIndex}, ${a.endIndex}) on sheet ${a.sheetId}; they are now at [${newStart}, ${newStart + n}).` }], isError: false };
     }
 
     case "hideSheetDimension":

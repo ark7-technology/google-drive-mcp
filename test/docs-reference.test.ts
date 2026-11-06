@@ -298,7 +298,7 @@ describe('Documentation reference', () => {
       'anyOf', 'maxItems',
       // Google API methods and request types
       'batchUpdate', 'updateCells', 'updatePageElementsZOrder', 'tableStartLocation',
-      'insertDate', 'insertPerson', 'insertRichLink',
+      'insertDate', 'insertPerson', 'insertRichLink', 'moveDimension',
       // Google API field names
       'byteLength', 'contentUri', 'createdTime', 'dataBase64', 'externalOnly',
       'fileOrganizer', 'fullText', 'hangoutsMeet', 'hiddenByUser', 'horizontalRule',

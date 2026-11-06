@@ -349,6 +349,24 @@ describe('Sheets tools', () => {
       assert.ok(res.content[0].text!.includes('Renamed'));
     });
 
+    it('setSheetHidden hides and shows a tab', async () => {
+      const hide = await callTool(ctx.client, 'setSheetHidden', { spreadsheetId: 'sheet-1', sheetId: 7, hidden: true });
+      assert.equal(hide.isError, false);
+      assert.ok(hide.content[0].text!.includes('Hid sheet 7'));
+      const show = await callTool(ctx.client, 'setSheetHidden', { spreadsheetId: 'sheet-1', sheetId: 7, hidden: false });
+      assert.equal(show.isError, false);
+      assert.ok(show.content[0].text!.includes('Showed sheet 7'));
+      const calls = ctx.mocks.sheets.tracker.getCalls('spreadsheets.batchUpdate');
+      assert.deepEqual(calls[0].args[0].requestBody.requests[0].updateSheetProperties, { properties: { sheetId: 7, hidden: true }, fields: 'hidden' });
+      assert.deepEqual(calls[1].args[0].requestBody.requests[0].updateSheetProperties, { properties: { sheetId: 7, hidden: false }, fields: 'hidden' });
+    });
+
+    it('setSheetHidden requires hidden', async () => {
+      const res = await callTool(ctx.client, 'setSheetHidden', { spreadsheetId: 'sheet-1', sheetId: 7 });
+      assert.equal(res.isError, true);
+      assert.equal(ctx.mocks.sheets.tracker.getCalls('spreadsheets.batchUpdate').length, 0);
+    });
+
     it('deleteSheet happy path', async () => {
       const res = await callTool(ctx.client, 'deleteSheet', { spreadsheetId: 'sheet-1', sheetId: 0 });
       assert.equal(res.isError, false);
@@ -581,6 +599,36 @@ describe('Sheets tools', () => {
         spreadsheetId: 'sheet-1', sheetId: 0, dimension: 'ROWS', startIndex: 4, endIndex: 4,
       });
       assert.equal(reversed.isError, true);
+      assert.equal(ctx.mocks.sheets.tracker.getCalls('spreadsheets.batchUpdate').length, 0);
+    });
+
+    it('moveSheetDimension moves columns back and reports where they are', async () => {
+      const res = await callTool(ctx.client, 'moveSheetDimension', {
+        spreadsheetId: 'sheet-1', sheetId: 0, dimension: 'COLUMNS', startIndex: 94, endIndex: 106, destinationIndex: 83,
+      });
+      assert.equal(res.isError, false);
+      assert.ok(res.content[0].text!.includes('Moved 12 columns [94, 106)'));
+      assert.ok(res.content[0].text!.includes('now at [83, 95)'));
+      const req = ctx.mocks.sheets.tracker.getCalls('spreadsheets.batchUpdate')[0].args[0].requestBody.requests[0];
+      assert.deepEqual(req.moveDimension, { source: { sheetId: 0, dimension: 'COLUMNS', startIndex: 94, endIndex: 106 }, destinationIndex: 83 });
+    });
+
+    it('moveSheetDimension forward lands before the destination', async () => {
+      const res = await callTool(ctx.client, 'moveSheetDimension', {
+        spreadsheetId: 'sheet-1', sheetId: 0, dimension: 'ROWS', startIndex: 2, endIndex: 4, destinationIndex: 10,
+      });
+      assert.equal(res.isError, false);
+      assert.ok(res.content[0].text!.includes('now at [8, 10)'));
+    });
+
+    it('moveSheetDimension refuses a destination within the range', async () => {
+      for (const destinationIndex of [2, 3, 4]) {
+        const res = await callTool(ctx.client, 'moveSheetDimension', {
+          spreadsheetId: 'sheet-1', sheetId: 0, dimension: 'ROWS', startIndex: 2, endIndex: 4, destinationIndex,
+        });
+        assert.equal(res.isError, true);
+        assert.ok(res.content[0].text!.includes('moves nothing'));
+      }
       assert.equal(ctx.mocks.sheets.tracker.getCalls('spreadsheets.batchUpdate').length, 0);
     });
 
